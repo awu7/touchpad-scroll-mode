@@ -54,23 +54,18 @@ before enabling touchpad-scroll-mode.")
   "Function which maps the raw delta to a scroll speed."
   (* (expt (abs delta) 0.9) (touchpad--sign delta)))
 
-(defvar touchpad--original-scroll-margin)
 (defun touchpad--scroll-start-momentum ()
   "Start scrolling."
   (unless touchpad--scroll-timer
-    (message "start")
     (setq touchpad--scroll-timer (run-with-timer 0 (/ 1.0 touchpad-frame-rate) 'touchpad--scroll-momentum))
-    (setq gc-cons-threshold (* gc-cons-threshold 100))
-    (setq touchpad--original-scroll-margin scroll-margin)
-    (setq scroll-margin 0)))
+    (setq gc-cons-threshold (* gc-cons-threshold 100))))
 
 (defun touchpad--scroll-stop-momentum ()
   "Stop scrolling."
   (when touchpad--scroll-timer
     (cancel-timer touchpad--scroll-timer)
     (setq touchpad--scroll-timer nil)
-    (setq gc-cons-threshold (/ gc-cons-threshold 100))
-    (setq scroll-margin touchpad--original-scroll-margin)))
+    (setq gc-cons-threshold (/ gc-cons-threshold 100))))
 
 (defun touchpad-scroll-touchpad (event)
   "Change the momentum based on the scroll event."

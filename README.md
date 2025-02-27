@@ -19,6 +19,8 @@ And line scrolling:
 (touchpad-scroll-mode)
 ```
 
+Note: in some cases (such as inline images), `scroll-margin` must be set to 0 to prevent jittering.
+
 ## Why?
 
 Emacs has a lot of packages which implement improved scrolling behaviour.
