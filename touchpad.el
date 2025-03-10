@@ -23,14 +23,28 @@ before enabling touchpad-scroll-mode.")
 (defun touchpad--sign (x)
   (if (> x 0) 1 (if (< x 0) -1 0)))
 
+(defvar touchpad--ultra-scroll nil
+  "If non-nil, use ultra-scroll instead of pixel-scroll-precision-mode.
+Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
+
+(defun touchpad--pixel-scroll-up (delta)
+  (if touchpad--ultra-scroll
+      (ultra-scroll-up delta)
+    (pixel-scroll-precision-scroll-up delta)))
+
+(defun touchpad--pixel-scroll-down (delta)
+  (if touchpad--ultra-scroll
+      (ultra-scroll-down delta)
+    (pixel-scroll-precision-scroll-down delta)))
+
 (defun touchpad--do-scroll (delta window)
   (condition-case nil
       (progn
         (with-selected-window window
           (if touchpad-pixel-scroll
               (if (< delta 0)
-                  (pixel-scroll-precision-scroll-up (- (floor delta)))
-                (pixel-scroll-precision-scroll-down (floor delta)))
+                  (touchpad--pixel-scroll-up (- (floor delta)))
+                (touchpad--pixel-scroll-down (floor delta)))
             (let ((line-delta (- touchpad--residual (/ delta (touchpad--line-height 1 window)))))
               (scroll-down (floor line-delta))
               (setq touchpad--residual (- line-delta (floor line-delta)))))))
