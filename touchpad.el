@@ -27,27 +27,28 @@ before enabling touchpad-scroll-mode.")
   "If non-nil, use ultra-scroll instead of pixel-scroll-precision-mode.
 Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 
-(defun touchpad--pixel-scroll-up (delta)
+(defun touchpad--pixel-scroll-up (delta window)
   (if touchpad-ultra-scroll
-      (ultra-scroll-up delta)
-    (pixel-scroll-precision-scroll-up delta)))
+      (ultra-scroll--scroll delta window)
+    (with-selected-window window
+      (pixel-scroll-precision-scroll-up delta))))
 
-(defun touchpad--pixel-scroll-down (delta)
+(defun touchpad--pixel-scroll-down (delta window)
   (if touchpad-ultra-scroll
-      (ultra-scroll-down delta)
-    (pixel-scroll-precision-scroll-down delta)))
+      (ultra-scroll--scroll (- delta) window)
+    (with-selected-window window
+      (pixel-scroll-precision-scroll-down delta))))
 
 (defun touchpad--do-scroll (delta window)
   (condition-case nil
       (progn
-        (with-selected-window window
-          (if touchpad-pixel-scroll
-              (if (< delta 0)
-                  (touchpad--pixel-scroll-up (- (floor delta)))
-                (touchpad--pixel-scroll-down (floor delta)))
-            (let ((line-delta (- touchpad--residual (/ delta (touchpad--line-height 1 window)))))
-              (scroll-down (floor line-delta))
-              (setq touchpad--residual (- line-delta (floor line-delta)))))))
+        (if touchpad-pixel-scroll
+            (if (< delta 0)
+                (touchpad--pixel-scroll-up (- (floor delta)) window)
+              (touchpad--pixel-scroll-down (floor delta) window))
+          (let ((line-delta (- touchpad--residual (/ delta (touchpad--line-height 1 window)))))
+            (scroll-down (floor line-delta))
+            (setq touchpad--residual (- line-delta (floor line-delta))))))
     (beginning-of-buffer
      (message (error-message-string '(beginning-of-buffer)))
      (setq touchpad--scroll-momentum 0))
@@ -150,11 +151,10 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 (define-key touchpad-scroll-mode-map [touchscreen-end] 'touchpad-scroll-touchscreen-end)
 
 (define-minor-mode touchpad-scroll-mode
-  "Toggle touchpad scroll mode."
-  :global t
-  :keymap touchpad-scroll-mode-map
-  (if touchpad-scroll-mode
-      (setq mwheel-coalesce-scroll-events nil)
-    (setq mwheel-coalesce-scroll-events t)
-    (touchpad--scroll-stop-momentum)))
-
+"Toggle touchpad scroll mode."
+:global t
+:keymap touchpad-scroll-mode-map
+(if touchpad-scroll-mode
+    (setq mwheel-coalesce-scroll-events nil)
+  (setq mwheel-coalesce-scroll-events t)
+  (touchpad--scroll-stop-momentum)))
