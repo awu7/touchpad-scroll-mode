@@ -100,19 +100,21 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
         (when touchpad-debug (message "%s*" (round delta))))
       (setq touchpad--prev-delta delta))))
 
-(defvar touchpad--touchscreen-prev-y)
+(defvar touchpad--touchscreen-prev-y nil)
 (defvar touchpad--prev-timestamp)
 (defun touchpad-scroll-touchscreen-start (event)
   "Start scrolling based on the touchscreen touch start event."
   (interactive "e")
-  (setq touchpad--touchscreen-prev-y (cdr (nth 3 (cadr event))))
+  (setq touchpad--touchscreen-prev-y (cdr (nth 3 (caadr event))))
   (setq touchpad--prev-timestamp (float-time))
-  (setq touchpad--scroll-window (cadr (cadr event)))
+  (setq touchpad--scroll-window (cadr (caadr event)))
   (touchpad--scroll-stop-momentum)
   (when touchpad-debug (prin1 touchpad--touchscreen-prev-y)))
 (defun touchpad-scroll-touchscreen (event)
   "Change the momentum based on the touchscreen event."
   (interactive "e")
+  (when (not touchpad--touchscreen-prev-y)
+    (touchpad-scroll-touchscreen-start event))
   (let ((time-diff (- (float-time) touchpad--prev-timestamp)))
     (when (>= time-diff (/ 1.0 touchpad-frame-rate))
       (when (eq (length (cadr event)) 1)
@@ -128,7 +130,8 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
   (interactive)
   (let ((time-diff (- (float-time) touchpad--prev-timestamp)))
     (when (<= time-diff (/ 5.0 touchpad-frame-rate))
-      (touchpad--scroll-start-momentum))))
+      (touchpad--scroll-start-momentum)))
+  (setq touchpad--touchscreen-prev-y nil))
 
 (defun touchpad--scroll-momentum ()
   "Scroll the window based on the momentum."
@@ -146,15 +149,14 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 (defvar touchpad-scroll-mode-map (make-sparse-keymap))
 (define-key touchpad-scroll-mode-map [wheel-up] 'touchpad-scroll-touchpad)
 (define-key touchpad-scroll-mode-map [wheel-down] 'touchpad-scroll-touchpad)
-(define-key touchpad-scroll-mode-map [touchscreen-begin] 'touchpad-scroll-touchscreen-start)
 (define-key touchpad-scroll-mode-map [touchscreen-update] 'touchpad-scroll-touchscreen)
 (define-key touchpad-scroll-mode-map [touchscreen-end] 'touchpad-scroll-touchscreen-end)
 
 (define-minor-mode touchpad-scroll-mode
-"Toggle touchpad scroll mode."
-:global t
-:keymap touchpad-scroll-mode-map
-(if touchpad-scroll-mode
-    (setq mwheel-coalesce-scroll-events nil)
-  (setq mwheel-coalesce-scroll-events t)
-  (touchpad--scroll-stop-momentum)))
+  "Toggle touchpad scroll mode."
+  :global t
+  :keymap touchpad-scroll-mode-map
+  (if touchpad-scroll-mode
+      (setq mwheel-coalesce-scroll-events nil)
+    (setq mwheel-coalesce-scroll-events t)
+    (touchpad--scroll-stop-momentum)))
