@@ -4,6 +4,8 @@
   "Determines how susceptible the scroll is to changes in speed in the raw input.
 Higher values may make the scroll more responsive, but also more jittery.
 Possible values are between 0 and 1.")
+(defvar touchpad-touchscreen-correction-factor 0.6
+  "Multiplier to scroll momentum upon touchscreen release.")
 (defvar touchpad-frame-rate 60 "Frame rate of the scroll, in Hz.")
 (defvar touchpad-pixel-scroll nil
   "If non-nil, use pixel scrolling instead of line scrolling.
@@ -11,50 +13,75 @@ If nil, scroll position will be rounded to the nearest line,
 but momentum will still behave as normal.
 To use pixel scrolling, pixel-scroll-precision-mode must first be enabled
 before enabling touchpad-scroll-mode.")
+(defvar touchpad-hscroll t
+  "If non-nil, enable horizontal scrolling.")
+(defvar touchpad-diagonal-threshold 0.6
+  "Threshold between 0 and 1 which controls how much scrolling attempts to only
+move along one axis. Lower values make it easier to scroll diagonally.
+This variable only has an effect if `touchpad-hscroll' is non-nil.")
+(defvar touchpad-ultra-scroll nil
+  "If non-nil, use ultra-scroll instead of pixel-scroll-precision-mode.
+Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 (defvar touchpad-debug nil "If non-nil, print debug messages.")
 
-(defvar touchpad--scroll-momentum 0)
-(defvar touchpad--prev-delta 0)
-(defvar touchpad--residual 0)
 (defvar touchpad--scroll-window)
+
+(defvar touchpad--x '(0 0 0))
+(defvar touchpad--y '(0 0 0))
+(defmacro touchpad--momentum (axis)
+  `(car ,axis))
+(defmacro touchpad--prev-delta (axis)
+  `(cadr ,axis))
+(defmacro touchpad--residual (axis)
+  `(caddr ,axis))
+(defvar touchpad--axes (list touchpad--x touchpad--y))
 
 (defvar touchpad--scroll-timer nil)
 
 (defun touchpad--sign (x)
   (if (> x 0) 1 (if (< x 0) -1 0)))
 
-(defvar touchpad-ultra-scroll nil
-  "If non-nil, use ultra-scroll instead of pixel-scroll-precision-mode.
-Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
+(defun touchpad--cons-to-list (c)
+  (list (car c) (cdr c)))
 
-(defun touchpad--pixel-scroll-up (delta window)
-  (if touchpad-ultra-scroll
-      (ultra-scroll--scroll delta window)
-    (with-selected-window window
-      (pixel-scroll-precision-scroll-up delta))))
+(defun touchpad--fix-dir (d)
+  (let ((max (apply 'max (mapcar 'abs d))))
+    (mapcar (lambda (v)
+              (if (> (abs v) (* max touchpad-diagonal-threshold))
+                  v
+                0))
+            d)))
 
-(defun touchpad--pixel-scroll-down (delta window)
+(defun touchpad--pixel-scroll (delta window)
   (if touchpad-ultra-scroll
       (ultra-scroll--scroll (- delta) window)
     (with-selected-window window
-      (pixel-scroll-precision-scroll-down delta))))
+      (if (< delta 0)
+          (pixel-scroll-precision-scroll-up (- delta))
+        (pixel-scroll-precision-scroll-down delta)))))
+
+(defun touchpad--discrete-scroll (delta window axis step-size scroll-fn)
+  (let ((step-delta (- (touchpad--residual axis) (/ (float delta) step-size))))
+    (with-selected-window window
+      (funcall scroll-fn (floor step-delta)))
+    (setf (touchpad--residual axis) (- step-delta (floor step-delta)))))
 
 (defun touchpad--do-scroll (delta window)
-  (condition-case nil
-      (progn
-        (if touchpad-pixel-scroll
-            (if (< delta 0)
-                (touchpad--pixel-scroll-up (- (floor delta)) window)
-              (touchpad--pixel-scroll-down (floor delta) window))
-          (let ((line-delta (- touchpad--residual (/ delta (touchpad--line-height 1 window)))))
-            (scroll-down (floor line-delta))
-            (setq touchpad--residual (- line-delta (floor line-delta))))))
-    (beginning-of-buffer
-     (message (error-message-string '(beginning-of-buffer)))
-     (setq touchpad--scroll-momentum 0))
-    (end-of-buffer
-     (message (error-message-string '(end-of-buffer)))
-     (setq touchpad--scroll-momentum 0))))
+  (let ((dx (car delta))
+        (dy (cadr delta)))
+    (condition-case nil
+        (if (and touchpad-pixel-scroll
+                 (zerop (window-hscroll window))) ;; pixel scrolling breaks when there is nonzero hscroll
+            (touchpad--pixel-scroll (floor dy) window)
+          (touchpad--discrete-scroll dy window touchpad--y (touchpad--line-height 1 window) 'scroll-down))
+      (beginning-of-buffer
+       (message (error-message-string '(beginning-of-buffer)))
+       (setf (touchpad--momentum touchpad--y) 0))
+      (end-of-buffer
+       (message (error-message-string '(end-of-buffer)))
+       (setf (touchpad--momentum touchpad--y) 0)))
+    (when touchpad-hscroll
+      (touchpad--discrete-scroll dx window touchpad--x (frame-char-width (window-frame window)) 'scroll-left))))
 
 (defvar touchpad--cached-line-height 0)
 (defun touchpad--line-height (line window)
@@ -85,70 +112,86 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 (defun touchpad-scroll-touchpad (event)
   "Change the momentum based on the scroll event."
   (interactive "e")
-  (let ((delta (cdr (nth 4 event)))
+  (let ((delta (touchpad--cons-to-list (nth 4 event)))
         (window (mwheel-event-window event)))
-    (when delta
-      (setq delta (touchpad-speed-curve (- delta)))
-      (if (and (eq (touchpad--sign delta) (touchpad--sign touchpad--prev-delta))
-               (or (> (abs delta) (* (min (abs touchpad--prev-delta) (abs touchpad--scroll-momentum)) touchpad-sensitivity))
-                   (< (max (abs delta) (abs touchpad--prev-delta)) 10)))
-          (progn
-            (setq touchpad--scroll-momentum delta)
-            (setq touchpad--scroll-window window)
-            (touchpad--scroll-start-momentum)
-            (when touchpad-debug (message "%s" (round delta))))
-        (when touchpad-debug (message "%s*" (round delta))))
-      (setq touchpad--prev-delta delta))))
+    (setq delta (touchpad--fix-dir delta))
+    (cl-mapc (lambda (axis delta)
+               (when (eq axis touchpad--y)
+                 (setq delta (touchpad-speed-curve (- delta))))
+               (when (and (eq (touchpad--sign delta) (touchpad--sign (touchpad--prev-delta axis)))
+                          (or (> (abs delta) (* (min (abs (touchpad--prev-delta axis)) (abs (touchpad--momentum axis))) touchpad-sensitivity))
+                              (< (max (abs delta) (abs (touchpad--prev-delta axis))) 10)))
+                 (setf (touchpad--momentum axis) delta)
+                 (setq touchpad--scroll-window window)
+                 (touchpad--scroll-start-momentum))
+               (when touchpad-debug (message "%s*" (round delta)))
+               (setf (touchpad--prev-delta axis) delta))
+             touchpad--axes delta)))
 
-(defvar touchpad--touchscreen-prev-y nil)
+(defvar touchpad--touchscreen-prev-pos nil)
 (defvar touchpad--prev-timestamp)
 (defun touchpad-scroll-touchscreen-start (event)
   "Start scrolling based on the touchscreen touch start event."
   (interactive "e")
-  (setq touchpad--touchscreen-prev-y (cdr (nth 3 (caadr event))))
+  (setq touchpad--touchscreen-prev-pos (nth 3 (caadr event)))
   (setq touchpad--prev-timestamp (float-time))
   (setq touchpad--scroll-window (cadr (caadr event)))
   (touchpad--scroll-stop-momentum)
-  (when touchpad-debug (prin1 touchpad--touchscreen-prev-y)))
+  (when touchpad-debug (prin1 touchpad--touchscreen-prev-pos)))
 (defun touchpad-scroll-touchscreen (event)
   "Change the momentum based on the touchscreen event."
   (interactive "e")
-  (when (not touchpad--touchscreen-prev-y)
+  (when (not touchpad--touchscreen-prev-pos)
     (touchpad-scroll-touchscreen-start event))
   (let ((time-diff (- (float-time) touchpad--prev-timestamp)))
     (when (>= time-diff (/ 1.0 touchpad-frame-rate))
-      (when (eq (length (cadr event)) 1)
-        (let* ((y (cdr (nth 3 (car (cadr event)))))
-               (delta (- y touchpad--touchscreen-prev-y)))
-          (touchpad--do-scroll (- delta) touchpad--scroll-window)
-          (setq touchpad--touchscreen-prev-y y)
-          (setq touchpad--prev-delta delta)))
-      (setq touchpad--scroll-momentum (/ (/ touchpad--prev-delta time-diff) -60))
-      (setq touchpad--prev-timestamp (float-time)))))
+      (let* ((pos (nth 3 (car (cadr event))))
+             (raw-dx (- (car pos) (car touchpad--touchscreen-prev-pos)))
+             (raw-dy (- (cdr pos) (cdr touchpad--touchscreen-prev-pos)))
+             (delta (touchpad--fix-dir (list raw-dx raw-dy)))
+             (dx (car delta))
+             (dy (cadr delta)))
+        (when (eq (length (cadr event)) 1)
+          (touchpad--do-scroll (list dx (- dy)) touchpad--scroll-window)
+          (setq touchpad--touchscreen-prev-pos pos)
+          (setf (touchpad--prev-delta touchpad--x) dx)
+          (setf (touchpad--prev-delta touchpad--y) dy))
+        (setf (touchpad--momentum touchpad--x) (/ (touchpad--prev-delta touchpad--x) (min 1 (* time-diff 60))))
+        (setf (touchpad--momentum touchpad--y) (- (/ (touchpad--prev-delta touchpad--y) (min 1 (* time-diff 60)))))
+        (setq touchpad--prev-timestamp (float-time))))))
 (defun touchpad-scroll-touchscreen-end ()
   "Delegate scrolling to momentum, after a touchscreen end touch event."
   (interactive)
+  (mapc (lambda (axis)
+          (setf (touchpad--momentum axis) (* (touchpad--momentum axis) touchpad-touchscreen-correction-factor)))
+        touchpad--axes)
   (let ((time-diff (- (float-time) touchpad--prev-timestamp)))
     (when (<= time-diff (/ 5.0 touchpad-frame-rate))
       (touchpad--scroll-start-momentum)))
-  (setq touchpad--touchscreen-prev-y nil))
+  (setq touchpad--touchscreen-prev-pos nil))
 
 (defun touchpad--scroll-momentum ()
   "Scroll the window based on the momentum."
-  (let ((delta (* touchpad--scroll-momentum
-                  (/ 60.0 touchpad-frame-rate)
-                  touchpad-scroll-speed)))
-    (if (>= (abs touchpad--scroll-momentum) 1)
-        (progn
-          (touchpad--do-scroll delta touchpad--scroll-window)
-          (setq touchpad--scroll-momentum (* touchpad--scroll-momentum (expt touchpad-momentum-decay (/ 60.0 touchpad-frame-rate)))))
-      (setq touchpad--scroll-momentum 0))
-    (when (eq touchpad--scroll-momentum 0)
+  (let ((delta (mapcar (lambda (axis)
+                         (* (touchpad--momentum axis)
+                            (/ 60.0 touchpad-frame-rate)
+                            touchpad-scroll-speed))
+                       touchpad--axes)))
+    (touchpad--do-scroll delta touchpad--scroll-window)
+    (if (>= (apply 'max (mapcar (lambda (axis)
+                                  (abs (touchpad--momentum axis)))
+                                touchpad--axes))
+            1)
+        (mapc (lambda (axis)
+                (setf (touchpad--momentum axis)
+                      (* (touchpad--momentum axis) (expt touchpad-momentum-decay (/ 60.0 touchpad-frame-rate)))))
+              touchpad--axes)
       (touchpad--scroll-stop-momentum))))
 
 (defvar touchpad-scroll-mode-map (make-sparse-keymap))
-(define-key touchpad-scroll-mode-map [wheel-up] 'touchpad-scroll-touchpad)
-(define-key touchpad-scroll-mode-map [wheel-down] 'touchpad-scroll-touchpad)
+(mapc (lambda (key)
+        (define-key touchpad-scroll-mode-map (vector key) 'touchpad-scroll-touchpad))
+      '(wheel-up wheel-down wheel-left wheel-right))
 (define-key touchpad-scroll-mode-map [touchscreen-update] 'touchpad-scroll-touchscreen)
 (define-key touchpad-scroll-mode-map [touchscreen-end] 'touchpad-scroll-touchscreen-end)
 
