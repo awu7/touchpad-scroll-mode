@@ -6,6 +6,7 @@ Higher values may make the scroll more responsive, but also more jittery.
 Possible values are between 0 and 1.")
 (defvar touchpad-touchscreen-correction-factor 0.6
   "Multiplier to scroll momentum upon touchscreen release.")
+(defvar touchpad-mwheel-threshold 50)
 (defvar touchpad-frame-rate 60 "Frame rate of the scroll, in Hz.")
 (defvar touchpad-pixel-scroll nil
   "If non-nil, use pixel scrolling instead of line scrolling.
@@ -25,6 +26,10 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 (defvar touchpad-debug nil "If non-nil, print debug messages.")
 
 (defvar touchpad--scroll-window)
+
+(defvar touchpad--repeat-deltas nil)
+(defvar touchpad--jump-deltas nil)
+(defvar touchpad--prev-raw-delta-y 0)
 
 (defvar touchpad--x '(0 0 0))
 (defvar touchpad--y '(0 0 0))
@@ -104,29 +109,54 @@ Requires touchpad-pixel-scroll to be non-nil and ultra-scroll to be loaded.")
 
 (defun touchpad--scroll-stop-momentum ()
   "Stop scrolling."
+  (setq touchpad--prev-raw-delta-y 0)
   (when touchpad--scroll-timer
     (cancel-timer touchpad--scroll-timer)
     (setq touchpad--scroll-timer nil)
     (setq gc-cons-threshold (/ gc-cons-threshold 100))))
 
 (defun touchpad-scroll-touchpad (event)
-  "Change the momentum based on the scroll event."
+  "Change the momentum based on the scroll event.
+Also detects mouse wheel vs touchpad scroll using a heuristic:
+If all 4 of these checks are true, then this is probably a mouse wheel event:
+1. The x delta is 0.
+2. The y delta is big (> `touchpad-mwheel-threshold').
+3. The exact y delta has occurred twice in a row.
+4. The y delta has occurred as the first delta in a scroll."
   (interactive "e")
   (let ((delta (touchpad--cons-to-list (nth 4 event)))
         (window (mwheel-event-window event)))
-    (setq delta (touchpad--fix-dir delta))
-    (cl-mapc (lambda (axis delta)
-               (when (eq axis touchpad--y)
-                 (setq delta (touchpad-speed-curve (- delta))))
-               (when (and (eq (touchpad--sign delta) (touchpad--sign (touchpad--prev-delta axis)))
-                          (or (> (abs delta) (* (min (abs (touchpad--prev-delta axis)) (abs (touchpad--momentum axis))) touchpad-sensitivity))
-                              (< (max (abs delta) (abs (touchpad--prev-delta axis))) 10)))
-                 (setf (touchpad--momentum axis) delta)
-                 (setq touchpad--scroll-window window)
-                 (touchpad--scroll-start-momentum))
-               (when touchpad-debug (message "%s*" (round delta)))
-               (setf (touchpad--prev-delta axis) delta))
-             touchpad--axes delta)))
+    ;; mouse detection
+    (let ((dx (abs (car delta)))
+          (dy (abs (cadr delta))))
+      (when (and (= dx 0)
+                 (> dy touchpad-mwheel-threshold))
+        (when (= dy touchpad--prev-raw-delta-y)
+          (add-to-list 'touchpad--repeat-deltas dy))
+        (when (= touchpad--prev-raw-delta-y 0)
+          (add-to-list 'touchpad--jump-deltas dy)))
+      (setq touchpad--prev-raw-delta-y dy)
+      (if (and (= dx 0)
+               (member dy touchpad--repeat-deltas)
+               (member dy touchpad--jump-deltas))
+          (progn
+            (touchpad--scroll-stop-momentum)
+            (mwheel-scroll event))
+
+        ;; touchpad scroll
+        (setq delta (touchpad--fix-dir delta))
+        (cl-mapc (lambda (axis delta)
+                   (when (eq axis touchpad--y)
+                     (setq delta (touchpad-speed-curve (- delta))))
+                   (when (and (eq (touchpad--sign delta) (touchpad--sign (touchpad--prev-delta axis)))
+                              (or (> (abs delta) (* (min (abs (touchpad--prev-delta axis)) (abs (touchpad--momentum axis))) touchpad-sensitivity))
+                                  (< (max (abs delta) (abs (touchpad--prev-delta axis))) 10)))
+                     (setf (touchpad--momentum axis) delta)
+                     (setq touchpad--scroll-window window)
+                     (touchpad--scroll-start-momentum))
+                   (when touchpad-debug (message "%s*" (round delta)))
+                   (setf (touchpad--prev-delta axis) delta))
+                 touchpad--axes delta)))))
 
 (defvar touchpad--touchscreen-prev-pos nil)
 (defvar touchpad--prev-timestamp)
